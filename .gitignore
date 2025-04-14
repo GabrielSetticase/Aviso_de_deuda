@@ -1,0 +1,12 @@
+.env
+*.mdb
+notificaciones.csv
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env/
+.venv/

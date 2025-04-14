@@ -1,0 +1,3 @@
+@echo off
+echo Iniciando sistema de notificaciones...
+pythonw main.py

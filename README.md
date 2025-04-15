@@ -40,6 +40,24 @@ Este sistema automatiza el envío de notificaciones por correo electrónico y Wh
 
 El sistema se ejecutará automáticamente todos los días a las 09:00 y enviará notificaciones a los clientes que tengan vencimientos en 2 días.
 
+## Configuración del Inicio Automático
+
+Para configurar el sistema para que se inicie automáticamente cuando enciendas la computadora:
+
+1. Abre PowerShell como administrador
+2. Navega hasta la carpeta del proyecto
+3. Ejecuta el script de configuración:
+   ```
+   .\configurar_tarea.ps1
+   ```
+
+Esto creará una tarea programada llamada "SistemaAvisoDeuda" que ejecutará el sistema cada vez que inicies Windows.
+
+Para deshabilitar el inicio automático:
+1. Abre el Programador de tareas de Windows
+2. Busca la tarea "SistemaAvisoDeuda"
+3. Haz clic derecho y selecciona "Deshabilitar" o "Eliminar"
+
 ## Registro de Notificaciones
 
 Todas las notificaciones enviadas se registran en el archivo `notificaciones.csv` con la siguiente información:

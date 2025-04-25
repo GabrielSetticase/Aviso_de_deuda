@@ -46,7 +46,7 @@ class NotificationSystem:
             <div style="color: #666; font-size: 0.9em; border-top: 1px solid #eee; padding-top: 15px;">
                 <p style="color: #d32f2f; font-weight: bold;">*** ESTE ES UN MENSAJE AUTOMÁTICO Y NO REQUIERE RESPUESTA ***</p>
                 <p style="color: #d32f2f; font-weight: bold;">*** SI HA CANCELADO EL ACTA (POSEE RECIBO OFICIAL DE OSECAC)
-                O ESTÁ GESTIONANDO CON EL PAGO CON EL INSPECTOR ASIGNADO,
+                O ESTÁ GESTIONANDO EL PAGO CON EL INSPECTOR ASIGNADO,
                 POR FAVOR DESESTIME ESTE MENSAJE ***</p>
             </div>
         </body>
@@ -80,7 +80,7 @@ class NotificationSystem:
             <div style="color: #666; font-size: 0.9em; border-top: 1px solid #eee; padding-top: 15px;">
                 <p style="color: #d32f2f; font-weight: bold;">*** ESTE ES UN MENSAJE AUTOMÁTICO Y NO REQUIERE RESPUESTA ***</p>
                 <p style="color: #d32f2f; font-weight: bold;">*** SI HA CANCELADO EL ACTA (POSEE RECIBO OFICIAL DE OSECAC)
-                O ESTÁ GESTIONANDO CON EL PAGO CON EL INSPECTOR ASIGNADO,
+                O ESTÁ GESTIONANDO EL PAGO CON EL INSPECTOR ASIGNADO,
                 POR FAVOR DESESTIME ESTE MENSAJE ***</p>
             </div>
         </body>
@@ -89,19 +89,34 @@ class NotificationSystem:
 
     def load_mdb_data(self):
         try:
-            # Buscar el archivo cor*.mdb más reciente
+            # Buscar todos los archivos cor*.mdb
             mdb_files = [f for f in os.listdir() if f.startswith('cor') and f.endswith('.mdb')]
             if not mdb_files:
                 print("No se encontraron archivos cor*.mdb")
                 return None
             
-            latest_mdb = max(mdb_files)
+            # Lista para almacenar los DataFrames de cada archivo
+            all_actas = []
             
-            # Conectar a la base de datos de actas
-            conn_str = f'Driver={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={os.path.abspath(latest_mdb)}'
-            conn = pyodbc.connect(conn_str)
-            actas_df = pd.read_sql('SELECT NRO_ACTA, RAZON_SOCIAL, FECHA_PAGO_OBL, TOTALDEUDAACTUALIZADA, CUIT FROM actas', conn)
-            conn.close()
+            # Procesar cada archivo cor*.mdb
+            for mdb_file in mdb_files:
+                try:
+                    print(f"Procesando archivo: {mdb_file}")
+                    conn_str = f'Driver={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={os.path.abspath(mdb_file)}'
+                    conn = pyodbc.connect(conn_str)
+                    df = pd.read_sql('SELECT NRO_ACTA, RAZON_SOCIAL, FECHA_PAGO_OBL, TOTALDEUDAACTUALIZADA, CUIT FROM actas', conn)
+                    conn.close()
+                    all_actas.append(df)
+                except Exception as e:
+                    print(f"Error al procesar {mdb_file}: {e}")
+                    continue
+            
+            if not all_actas:
+                print("No se pudo procesar ningún archivo cor*.mdb")
+                return None
+                
+            # Combinar todos los DataFrames
+            actas_df = pd.concat(all_actas, ignore_index=True)
             
             # Conectar a la base de datos de empresas
             empresas_db = '4- EMPRESAS CORDOBA.mdb'
@@ -222,19 +237,37 @@ class NotificationSystem:
     def is_whatsapp_web_open(self):
         try:
             import psutil
+            import time
+            
+            # Verificar si hay un navegador abierto
+            browser_processes = ['chrome.exe', 'msedge.exe', 'firefox.exe', 'opera.exe']
+            browser_open = False
+            
             for proc in psutil.process_iter(['name']):
-                if 'chrome.exe' in proc.info['name'].lower() or 'msedge.exe' in proc.info['name'].lower():
-                    return True
-            return False
-        except:
+                if any(browser in proc.info['name'].lower() for browser in browser_processes):
+                    browser_open = True
+                    break
+            
+            if not browser_open:
+                print("No se detectó ningún navegador abierto. WhatsApp Web no está disponible.")
+                return False
+            
+            # Dar tiempo para que WhatsApp Web esté completamente cargado
+            time.sleep(5)  # Aumentado a 5 segundos para mayor seguridad
+            
+            print("Se detectó navegador abierto. Asumiendo que WhatsApp Web está disponible.")
+            return True
+            
+        except Exception as e:
+            print(f"Error al verificar WhatsApp Web: {str(e)}")
             return False
 
     def send_whatsapp(self, row, is_overdue=False):
         try:
-            # Verificar si WhatsApp Web está abierto
+            # Verificar si WhatsApp Web está disponible
             if not self.is_whatsapp_web_open():
-                print("WhatsApp Web no está abierto. Omitiendo envío de WhatsApp.")
-                self.log_notification('WhatsApp', row['ACTA'], 'múltiples números', 'Omitido', 'WhatsApp Web no está abierto')
+                print("WhatsApp Web no está disponible. Se omitirá el envío de mensajes por WhatsApp.")
+                self.log_notification('WhatsApp', row['ACTA'], 'múltiples números', 'Omitido', 'WhatsApp Web no está disponible')
                 return
 
             if is_overdue:
@@ -260,39 +293,48 @@ class NotificationSystem:
             
             # Función para formatear y enviar a un número
             def send_to_number(phone_number, delay_minutes=0):
-                if pd.notna(phone_number):
-                    phone_number = str(phone_number)
-                    # Limpiar el número de teléfono de caracteres no numéricos
-                    phone_number = ''.join(filter(str.isdigit, phone_number))
-                    
-                    # Asegurar que el número tenga el formato correcto para WhatsApp
-                    if phone_number.startswith('0'):
-                        phone_number = '+54' + phone_number[1:]
-                    elif phone_number.startswith('54'):
-                        phone_number = '+' + phone_number
-                    else:
-                        phone_number = '+54' + phone_number
-                    
-                    # Verificar que el número tenga la longitud correcta
-                    if len(phone_number) < 12:
-                        raise ValueError(f"Número de teléfono inválido: {phone_number}")
-                    
-                    now = datetime.now()
-                    send_time = now + timedelta(minutes=2 + delay_minutes)
-                    pywhatkit.sendwhatmsg(phone_number, message, 
-                                         send_time.hour, 
-                                         send_time.minute)
-                    
-                    print(f"WhatsApp enviado a {phone_number}")
-                    self.log_notification('WhatsApp', row['ACTA'], phone_number, 'Enviado')
+                try:
+                    if pd.notna(phone_number):
+                        phone_number = str(phone_number)
+                        # Limpiar el número de teléfono
+                        phone_number = ''.join(filter(str.isdigit, phone_number))
+                        
+                        # Formatear el número para WhatsApp
+                        if phone_number.startswith('0'):
+                            phone_number = '+54' + phone_number[1:]
+                        elif phone_number.startswith('54'):
+                            phone_number = '+' + phone_number
+                        else:
+                            phone_number = '+54' + phone_number
+                        
+                        # Verificar longitud del número
+                        if len(phone_number) < 12:
+                            raise ValueError(f"Número de teléfono inválido: {phone_number}")
+                        
+                        now = datetime.now()
+                        send_time = now + timedelta(minutes=2 + delay_minutes)
+                        
+                        print(f"Intentando enviar WhatsApp a {phone_number}")
+                        pywhatkit.sendwhatmsg(phone_number, message, 
+                                             send_time.hour, 
+                                             send_time.minute)
+                        
+                        print(f"WhatsApp enviado exitosamente a {phone_number}")
+                        self.log_notification('WhatsApp', row['ACTA'], phone_number, 'Enviado')
+                except Exception as e:
+                    error_msg = f"Error al enviar WhatsApp a {phone_number}: {str(e)}"
+                    print(error_msg)
+                    self.log_notification('WhatsApp', row['ACTA'], phone_number, 'Error', error_msg)
             
-            # Enviar a ambos números con un pequeño retraso entre ellos
-            send_to_number(row['TEL_DOM_LEGAL'])
-            send_to_number(row['TEL_DOM_REAL'], delay_minutes=1)
+            # Enviar a ambos números con retraso entre ellos
+            if pd.notna(row['TEL_DOM_LEGAL']):
+                send_to_number(row['TEL_DOM_LEGAL'])
+            if pd.notna(row['TEL_DOM_REAL']):
+                send_to_number(row['TEL_DOM_REAL'], delay_minutes=1)
             
         except Exception as e:
-            error_msg = str(e)
-            print(f"Error al enviar WhatsApp: {error_msg}")
+            error_msg = f"Error general en send_whatsapp: {str(e)}"
+            print(error_msg)
             self.log_notification('WhatsApp', row['ACTA'], 'múltiples números', 'Error', error_msg)
 
     def send_notifications(self, row, is_overdue=False):
@@ -301,10 +343,47 @@ class NotificationSystem:
         if pd.notna(row['TEL_DOM_LEGAL']) or pd.notna(row['TEL_DOM_REAL']):
             self.send_whatsapp(row, is_overdue)
 
+    def check_pending_notifications(self, df):
+        today = datetime.now().date()
+        sent_notifications = set()
+        
+        # Cargar notificaciones ya enviadas del CSV
+        if os.path.exists(self.log_file):
+            with open(self.log_file, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                next(reader)  # Saltar encabezado
+                for row in reader:
+                    if len(row) >= 3:  # Asegurar que la fila tiene suficientes columnas
+                        sent_notifications.add(f"{row[2]}_{row[0].split()[0]}")  # Acta_Fecha
+        
+        # Revisar notificaciones pendientes de los últimos 7 días
+        for _, row in df.iterrows():
+            vencimiento = pd.to_datetime(row['VENCIMIENTO']).date()
+            
+            # Calcular fechas de notificación y mora
+            notification_date = vencimiento - timedelta(days=2)
+            notification_date = self.adjust_business_day(notification_date, 'backward')
+            
+            overdue_date = vencimiento + timedelta(days=10)
+            overdue_date = self.adjust_business_day(overdue_date, 'backward')
+            
+            # Verificar notificaciones pendientes de los últimos 7 días
+            for check_date in [(notification_date, False), (overdue_date, True)]:
+                date_to_check, is_overdue = check_date
+                notification_key = f"{row['ACTA']}_{date_to_check}"
+                
+                # Si la fecha está dentro de los últimos 7 días y la notificación no fue enviada
+                if (today - date_to_check).days <= 7 and (today - date_to_check).days >= 0:
+                    if notification_key not in sent_notifications and notification_key not in self.notification_log:
+                        print(f"Enviando notificación pendiente para acta {row['ACTA']} del {date_to_check}")
+                        self.send_notifications(row, is_overdue)
+                        self.notification_log.add(notification_key)
+
     def check_mdb_files(self):
         df = self.load_mdb_data()
         if df is not None:
-            self.check_upcoming_due_dates(df)
+            self.check_pending_notifications(df)  # Verificar notificaciones pendientes
+            self.check_upcoming_due_dates(df)  # Verificar notificaciones del día actual
 
 def main():
     notification_system = NotificationSystem()
@@ -314,9 +393,6 @@ def main():
     
     # Programar la verificación diaria
     schedule.every().day.at("09:00").do(notification_system.check_mdb_files)
-    
-    # Ejecutar verificación inicial al iniciar el programa
-    notification_system.check_mdb_files()
     
     # Mantener el programa en ejecución
     while True:

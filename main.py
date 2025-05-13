@@ -157,28 +157,52 @@ class NotificationSystem:
     def check_upcoming_due_dates(self, df):
         today = datetime.now().date()
         
+        # Cargar notificaciones ya enviadas del CSV
+        sent_notifications = set()
+        actas_notificadas_upcoming = set()  # Actas que ya recibieron notificación de próximo vencimiento
+        actas_notificadas_overdue = set()   # Actas que ya recibieron notificación de mora
+        if os.path.exists(self.log_file):
+            with open(self.log_file, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                next(reader)  # Saltar encabezado
+                for row in reader:
+                    if len(row) >= 3:  # Asegurar que la fila tiene suficientes columnas
+                        acta = row[2]
+                        notification_type = 'overdue' if 'impaga' in row[1] else 'upcoming'
+                        sent_notifications.add(f"{acta}_{row[0].split()[0]}_{notification_type}")
+                        # Agregar el acta al conjunto correspondiente según el tipo de notificación
+                        if notification_type == 'upcoming':
+                            actas_notificadas_upcoming.add(acta)
+                        else:
+                            actas_notificadas_overdue.add(acta)
+        
         for _, row in df.iterrows():
+            # Si el acta ya ha recibido ambos tipos de notificaciones, saltarla
+            if row['ACTA'] in actas_notificadas_upcoming and row['ACTA'] in actas_notificadas_overdue:
+                print(f"Acta {row['ACTA']} ya ha recibido ambos tipos de notificaciones. No se enviarán más notificaciones.")
+                continue
+                
             vencimiento = pd.to_datetime(row['VENCIMIENTO']).date()
-            notification_key = f"{row['ACTA']}_{vencimiento}"
-            overdue_key = f"{row['ACTA']}_{vencimiento}_overdue"
             
             # Calcular la fecha de notificación (2 días antes)
             notification_date = vencimiento - timedelta(days=2)
             notification_date = self.adjust_business_day(notification_date, 'backward')
             
-            # Calcular la fecha de aviso de mora (10 días después)
-            overdue_date = vencimiento + timedelta(days=10)
+            # Calcular la fecha de aviso de mora (20 días después)
+            overdue_date = vencimiento + timedelta(days=20)
             overdue_date = self.adjust_business_day(overdue_date, 'backward')
             
             # Verificar notificaciones de vencimiento próximo
-            if today == notification_date and notification_key not in self.notification_log:
+            notification_key = f"{row['ACTA']}_{today}_upcoming"
+            if today == notification_date and notification_key not in sent_notifications:
                 self.send_notifications(row, is_overdue=False)
-                self.notification_log.add(notification_key)
+                actas_notificadas_upcoming.add(row['ACTA'])  # Agregar el acta al conjunto de notificaciones de vencimiento
             
             # Verificar notificaciones de actas vencidas
-            if today == overdue_date and overdue_key not in self.notification_log:
+            overdue_key = f"{row['ACTA']}_{today}_overdue"
+            if today == overdue_date and overdue_key not in sent_notifications and row['ACTA'] not in actas_notificadas_overdue:
                 self.send_notifications(row, is_overdue=True)
-                self.notification_log.add(overdue_key)
+                actas_notificadas_overdue.add(row['ACTA'])  # Agregar el acta al conjunto de notificaciones de mora
 
     def initialize_log_file(self):
         if not os.path.exists(self.log_file):
@@ -235,6 +259,8 @@ class NotificationSystem:
             self.log_notification('Email', row['ACTA'], row['MAIL'], 'Error', error_msg)
 
     def is_whatsapp_web_open(self):
+        print("WhatsApp Web está temporalmente suspendido.")
+        return False
         try:
             import psutil
             import time
@@ -338,10 +364,67 @@ class NotificationSystem:
             self.log_notification('WhatsApp', row['ACTA'], 'múltiples números', 'Error', error_msg)
 
     def send_notifications(self, row, is_overdue=False):
+        # Verificar si el total de la deuda es mayor a cero
+        if row['TOTAL ACTA'] <= 0:
+            print(f"No se envían notificaciones para el acta {row['ACTA']} porque el total es {row['TOTAL ACTA']}")
+            return
+            
         if pd.notna(row['MAIL']):
             self.send_email(row, is_overdue)
         if pd.notna(row['TEL_DOM_LEGAL']) or pd.notna(row['TEL_DOM_REAL']):
             self.send_whatsapp(row, is_overdue)
+
+    def clean_completed_csv_files(self):
+        # Obtener todas las actas y su estado de notificación
+        actas_notificadas = {}
+        if os.path.exists(self.log_file):
+            with open(self.log_file, 'r', newline='', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                next(reader)  # Saltar encabezado
+                for row in reader:
+                    if len(row) >= 3:
+                        acta = row[2]
+                        notification_type = 'overdue' if 'impaga' in row[1] else 'upcoming'
+                        if acta not in actas_notificadas:
+                            actas_notificadas[acta] = {'upcoming': False, 'overdue': False}
+                        actas_notificadas[acta][notification_type] = True
+
+        # Obtener actas por archivo MDB
+        mdb_files = [f for f in os.listdir() if f.startswith('cor') and f.endswith('.mdb')]
+        for mdb_file in mdb_files:
+            try:
+                conn_str = f'Driver={{Microsoft Access Driver (*.mdb, *.accdb)}};DBQ={os.path.abspath(mdb_file)}'
+                conn = pyodbc.connect(conn_str)
+                df = pd.read_sql('SELECT NRO_ACTA FROM actas', conn)
+                conn.close()
+
+                # Verificar si todas las actas del archivo han sido notificadas
+                todas_notificadas = True
+                for _, row in df.iterrows():
+                    acta = str(row['NRO_ACTA'])
+                    if acta not in actas_notificadas or not (actas_notificadas[acta]['upcoming'] and actas_notificadas[acta]['overdue']):
+                        todas_notificadas = False
+                        break
+
+                # Si todas las actas fueron notificadas, eliminar el archivo CSV y MDB correspondiente
+                if todas_notificadas:
+                    # Eliminar archivo CSV si existe
+                    csv_file = mdb_file.replace('.mdb', '.csv')
+                    if os.path.exists(csv_file):
+                        os.remove(csv_file)
+                        print(f"Se eliminó el archivo {csv_file} ya que todas sus actas fueron notificadas.")
+                    
+                    # Eliminar archivo MDB
+                    try:
+                        os.remove(mdb_file)
+                        print(f"Se eliminó el archivo {mdb_file} ya que todas sus actas fueron notificadas.")
+                    except Exception as e:
+                        print(f"Error al eliminar el archivo {mdb_file}: {e}")
+                        continue
+
+            except Exception as e:
+                print(f"Error al procesar {mdb_file}: {e}")
+                continue
 
     def check_pending_notifications(self, df):
         today = datetime.now().date()
@@ -354,7 +437,8 @@ class NotificationSystem:
                 next(reader)  # Saltar encabezado
                 for row in reader:
                     if len(row) >= 3:  # Asegurar que la fila tiene suficientes columnas
-                        sent_notifications.add(f"{row[2]}_{row[0].split()[0]}")  # Acta_Fecha
+                        notification_type = 'overdue' if 'impaga' in row[1] else 'upcoming'
+                        sent_notifications.add(f"{row[2]}_{row[0].split()[0]}_{notification_type}")
         
         # Revisar notificaciones pendientes de los últimos 7 días
         for _, row in df.iterrows():
@@ -370,14 +454,14 @@ class NotificationSystem:
             # Verificar notificaciones pendientes de los últimos 7 días
             for check_date in [(notification_date, False), (overdue_date, True)]:
                 date_to_check, is_overdue = check_date
-                notification_key = f"{row['ACTA']}_{date_to_check}"
+                notification_type = 'overdue' if is_overdue else 'upcoming'
+                notification_key = f"{row['ACTA']}_{date_to_check}_{notification_type}"
                 
                 # Si la fecha está dentro de los últimos 7 días y la notificación no fue enviada
                 if (today - date_to_check).days <= 7 and (today - date_to_check).days >= 0:
-                    if notification_key not in sent_notifications and notification_key not in self.notification_log:
+                    if notification_key not in sent_notifications:
                         print(f"Enviando notificación pendiente para acta {row['ACTA']} del {date_to_check}")
                         self.send_notifications(row, is_overdue)
-                        self.notification_log.add(notification_key)
 
     def check_mdb_files(self):
         df = self.load_mdb_data()
@@ -391,8 +475,13 @@ def main():
     print("El sistema se ejecutará automáticamente todos los días a las 09:00")
     print("Para detener el programa, presione Ctrl+C")
     
-    # Programar la verificación diaria
+    # Programar la verificación diaria para las 09:00
     schedule.every().day.at("09:00").do(notification_system.check_mdb_files)
+    
+    # Ejecutar la verificación inicial
+    notification_system.check_mdb_files()
+    
+    print(f"Próxima ejecución programada para las 09:00")
     
     # Mantener el programa en ejecución
     while True:
